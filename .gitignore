@@ -70,6 +70,9 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Geonotebook stuff
+docker/config/patch.diff
+
 # pyenv
 .python-version
 
