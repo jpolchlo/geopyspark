@@ -17,7 +17,7 @@ class ColorRamp(object):
 
 
 class PngRDD(object):
-    def __init__(self, pyramid, ramp_name, debug=False):
+    def __init__(self, pyramid, ramp_name, persist_mode="NONE", debug=False):
         """Convert a pyramid of TiledRasterRDDs into a displayable structure of PNGs
 
         Args:
@@ -29,6 +29,7 @@ class PngRDD(object):
                 HeatmapBlueToYellowToRedSpectrum, HeatmapDarkRedToYellowWhite,
                 HeatmapLightPurpleToDarkPurpleToWhite, ClassificationBoldLandUse, and
                 ClassificationMutedTerrain
+            persist_mode (str): Sets the persistence mode.  See :func:`~PngRDD.set_persist`.
 
         Returns: A PngRDD object
         """
@@ -42,9 +43,10 @@ class PngRDD(object):
         self.max_zoom = level0.zoom_level
         self.pngpyramid = list(map(lambda layer: self.geopysc._jvm.geopyspark.geotrellis.PngRDD.asSingleband(layer.srdd, ramp_name), pyramid))
         self.debug = debug
+        set_persist(persist_mode)
 
     @classmethod
-    def makePyramid(cls, tiledrdd, ramp_name, start_zoom=None, end_zoom=0, resample_method=NEARESTNEIGHBOR, debug=False):
+    def makePyramid(cls, tiledrdd, ramp_name, start_zoom=None, end_zoom=0, resample_method=NEARESTNEIGHBOR, persist_mode="NONE", debug=False):
         """Create a pyramided PngRDD from a TiledRasterRDD
 
         Args:
@@ -78,7 +80,7 @@ class PngRDD(object):
 
         pyramid = reprojected.pyramid(start_zoom, end_zoom, resample_method)
 
-        return cls(pyramid, ramp_name, debug)
+        return cls(pyramid, ramp_name, persist_mode, debug)
 
     def lookup(self, col, row, zoom=None):
         """Return the value(s) in the image of a particular SpatialKey (given by col and row)
@@ -111,3 +113,18 @@ class PngRDD(object):
         result = pngrdd.lookup(col, row)
 
         return [bytes for bytes in result]
+
+    def set_persist(self, storage_mode):
+        """Set the persistence mode of the underlying RDD structure.
+
+        Args:
+            storage_mode (str): The string name of the storage mode to set.  Possible values
+                are NONE, DISK_ONLY, DISK_ONLY_2, MEMORY_ONLY, MEMORY_ONLY_2, 
+                MEMORY_ONLY_SER, MEMORY_ONLY_SER_2, MEMORY_AND_DISK, MEMORY_AND_DISK_2, 
+                MEMORY_AND_DISK_SER, MEMORY_AND_DISK_SER_2, and OFF_HEAP.
+
+        Returns: Nothing
+        """
+        for level in self.pyramid:
+            level.srdd.setPersistenceMode(storage_mode)
+        self.persisted = storage_mode != "NONE"
