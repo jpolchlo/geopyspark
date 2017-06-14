@@ -21,11 +21,13 @@ index bfa5658..4beb0e2 100644
      pip2.7 install . && \
      jupyter serverextension enable --py geonotebook --sys-prefix && \
 diff --git a/config/geonotebook.ini b/config/geonotebook.ini
-index 6ff4b8d..c88173f 100644
+index 6ff4b8d..c03959b 100644
 --- a/config/geonotebook.ini
 +++ b/config/geonotebook.ini
-@@ -2,6 +2,9 @@
- vis_server = ktile
+@@ -1,7 +1,10 @@
+ [default]
+-vis_server = ktile
++vis_server = geotrellis
  log_level = WARNING
  
 +[geotrellis]
@@ -155,7 +157,7 @@ index 1e742d5..f6786b6 100644
  
          cb = self._remote.remove_layer(layer_name).then(
 diff --git a/geonotebook/layers.py b/geonotebook/layers.py
-index 0e73741..316a58c 100644
+index 0e73741..6961c92 100644
 --- a/geonotebook/layers.py
 +++ b/geonotebook/layers.py
 @@ -23,7 +23,7 @@ class GeonotebookLayer(object):
@@ -186,12 +188,7 @@ index 0e73741..316a58c 100644
          else:
              self.vis_url = vis_url
  
-@@ -245,11 +246,40 @@ class SimpleLayer(DataLayer):
-     def query_params(self):
-         return self.config.vis_server.get_params(
-             self.name, self.data, **self.vis_options.serialize())
--
-     def __repr__(self):
+@@ -250,6 +251,37 @@ class SimpleLayer(DataLayer):
          return "<{}('{}')>".format(
              self.__class__.__name__, self.name.split("_")[0])
  
@@ -214,7 +211,8 @@ index 0e73741..316a58c 100644
 +
 +    @property
 +    def name(self):
-+        return self._name
++        return "{}_{}".format(
++            self._name, hash(self.vis_options) + sys.maxsize + 1)
 +
 +    @property
 +    def query_params(self):
@@ -250,20 +248,21 @@ index 0000000..3e3a150
 +__all__ = ('GeoTrellis')
 diff --git a/geonotebook/vis/geotrellis/geotrellis.py b/geonotebook/vis/geotrellis/geotrellis.py
 new file mode 100644
-index 0000000..3ff65ec
+index 0000000..bb6dd7f
 --- /dev/null
 +++ b/geonotebook/vis/geotrellis/geotrellis.py
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,169 @@
++import os
 +import requests
 +import threading
-+import multiprocessing
 +import time
 +import logging
 +
++from datetime import datetime
 +from notebook.base.handlers import IPythonHandler
-+from geonotebook.wrappers import (RddRasterData,
-+                                  GeoTrellisCatalogLayerData)
-+from random import randint
++from geonotebook.wrappers.raster import (RddRasterData,
++                                         TMSRasterData,
++                                         GeoTrellisCatalogLayerData)
 +from .server import (rdd_server,
 +                     catalog_layer_server,
 +                     catalog_multilayer_server,
@@ -272,7 +271,8 @@ index 0000000..3ff65ec
 +from .render_methods import render_default_rdd
 +
 +logger = logging.getLogger('geotrellis-tile-server')
-+# jupyterhub --no-ssl --Spawner.notebook_dir=/home/hadoop
++# jupyterhub --no-ssl --Spawner.notebook_dir=/home/hadoop/notebooks
++
 +
 +class GeoTrellisTileHandler(IPythonHandler):
 +
@@ -302,30 +302,6 @@ index 0000000..3ff65ec
 +            self.set_status(500)
 +            self.finish()
 +
-+class GeoTrellisShutdownHandler(IPythonHandler):
-+
-+    def initialize(self):
-+        pass
-+
-+    def get(self, port):
-+        url = "http://localhost:%s/shutdown" % port
-+        response = requests.get(url)
-+        self.set_header('Content-Type', 'text/html')
-+        self.write(str(response.content))
-+        self.set_status(200)
-+        self.finish()
-+
-+        # if response.status_code == requests.codes.ok:
-+        #     self.set_header('Content-Type', 'text/html')
-+        #     self.write(str(response.content))
-+        #     self.set_status(200)
-+        #     self.finish()
-+        # else:
-+        #     self.set_header('Content-Type', 'text/html')
-+        #     self.write(str(response.content))
-+        #     self.set_status(500)
-+        #     self.finish()
-+
 +class GeoTrellis(object):
 +
 +    def __init__(self, config, url):
@@ -340,8 +316,6 @@ index 0000000..3ff65ec
 +    def initialize_webapp(self, config, webapp):
 +        pattern = r'/user/[^/]+/geotrellis/([0-9]+)/([0-9]+)/([0-9]+)/([0-9]+)\.png.*'
 +        webapp.add_handlers(r'.*', [(pattern, GeoTrellisTileHandler)])
-+        pattern = r'/user/[^/]+/geotrellis/([0-9]+)/shutdown*'
-+        webapp.add_handlers(r'.*', [(pattern, GeoTrellisShutdownHandler)])
 +
 +    def get_params(self, name, data, **kwargs):
 +        return {}
@@ -354,7 +328,8 @@ index 0000000..3ff65ec
 +        if 'geotrellis' in inproc_server_states:
 +            if name in inproc_server_states['geotrellis']['ports']:
 +                port = inproc_server_states['geotrellis']['ports'][name]
-+                url = "http://localhost:8000/user/hadoop/geotrellis/%s/shutdown" % port
++                user = os.environ['LOGNAME'] if 'LOGNAME' in os.environ else 'hadoop'
++                url = "http://localhost:%s/shutdown" % port
 +                response = requests.get(url)
 +                status_code = response.status_code
 +                inproc_server_states['geotrellis']['ports'].pop(name, None)
@@ -374,15 +349,19 @@ index 0000000..3ff65ec
 +        if not "geotrellis" in inproc_server_states:
 +            inproc_server_states["geotrellis"] = { "ports" : {} }
 +
-+        server_port = randint(49152, 65535)
-+        while server_port in inproc_server_states['geotrellis']['ports'].values():
-+            server_port = randint(49152, 65535)
++        port_coordination = {'handshake': str(datetime.now()) + " " + str(os.getpid()) + " " + str(datetime.now()) + "\n"}
 +
 +        # TODO: refactor this to different methods?
-+        if isinstance(data, RddRasterData):
++        if isinstance(data, TMSRasterData):
++            rdd = TMSRasterData.rdd
++            geopysc = rdd.geopysc
++            server = make_tms(geopysc, port_coordination['handshake'])
++
++            port_coordination['port'] = server.port()
++        elif isinstance(data, RddRasterData):
 +            rdd = data.rdd
 +            if isinstance(rdd, PngRDD):
-+                t = threading.Thread(target=png_layer_server, args=(server_port, rdd))
++                t = threading.Thread(target=png_layer_server, args=(port_coordination, rdd))
 +                t.start()
 +            else:
 +                if isinstance(rdd, RasterRDD):
@@ -403,7 +382,7 @@ index 0000000..3ff65ec
 +                for layer_rdd in reprojected.pyramid(reprojected.zoom_level, 0):
 +                    rdds[layer_rdd.zoom_level] = layer_rdd
 +
-+                args = (server_port, rdds, render_tile)
++                args = (port_coordination, rdds, render_tile)
 +                t = threading.Thread(target=rdd_server, args=args)
 +                t.start()
 +        elif isinstance(data, GeoTrellisCatalogLayerData):
@@ -411,7 +390,7 @@ index 0000000..3ff65ec
 +            if render_tile is None:
 +                raise Exception("GeoTrellis Layers require render_tile function.")
 +
-+            args = (server_port,
++            args = (port_coordination,
 +                    data.value_reader,
 +                    data.layer_name,
 +                    data.key_type,
@@ -419,17 +398,29 @@ index 0000000..3ff65ec
 +                    data.avroregistry,
 +                    render_tile)
 +            if isinstance(data.layer_name, list):
-+                p = multiprocessing.Process(target=catalog_multilayer_server, args=args)
++                t = threading.Thread(target=catalog_multilayer_server, args=args)
 +            else:
-+                p = multiprocessing.Process(target=catalog_layer_server, args=args)
-+            p.start()
++                t = threading.Thread(target=catalog_layer_server, args=args)
++            t.start()
 +        else:
 +            raise Exception("GeoTrellis vis server cannot handle data of type %s" % (type(data)))
 +
-+        inproc_server_states['geotrellis']['ports'][name] = server_port
++        keep_looping = True
++        while keep_looping:
++            if 'port' in port_coordination:
++                port = port_coordination['port']
++                if port > 0:
++                    url = "http://localhost:%s/handshake" % port
++                    response = requests.get(url)
++                    if response.text == port_coordination['handshake']:
++                        keep_looping = False
++            time.sleep(0.68) # nearly an eternity
 +
-+        base_url = "http://localhost:8000/user/hadoop/geotrellis" # TODO: Get rid of hardcoded user
-+        return "%s/%d" % (base_url, server_port)
++        inproc_server_states['geotrellis']['ports'][name] = port_coordination['port']
++
++        user = os.environ['LOGNAME'] if 'LOGNAME' in os.environ else 'hadoop'
++        base_url = "http://localhost:8000/user/%s/geotrellis" % user
++        return "%s/%d" % (base_url, port_coordination['port'])
 diff --git a/geonotebook/vis/geotrellis/render_methods.py b/geonotebook/vis/geotrellis/render_methods.py
 new file mode 100644
 index 0000000..a719593
@@ -572,38 +563,25 @@ index 0000000..a719593
 +        return Image.merge('RGBA', list(gray, gray, gray, alfa))
 diff --git a/geonotebook/vis/geotrellis/server.py b/geonotebook/vis/geotrellis/server.py
 new file mode 100644
-index 0000000..c21fa6a
+index 0000000..488b040
 --- /dev/null
 +++ b/geonotebook/vis/geotrellis/server.py
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,167 @@
 +import io
 +import logging
 +import numpy as np
++import os
 +import rasterio
 +import threading
 +import sys
 +import time
 +import traceback
 +
++from random import randint
 +from gevent.pywsgi import WSGIServer
-+
-+###
 +from PIL import Image, ImageDraw, ImageFont
-+
-+def make_image(arr):
-+    return Image.fromarray(arr.astype('uint8')).convert('L')
-+
-+def clamp(x):
-+    if (x < 0.0):
-+        x = 0
-+    elif (x >= 1.0):
-+        x = 255
-+    else:
-+        x = (int)(x * 255)
-+    return x
-+###
-+
 +from flask import Flask, make_response, abort, request
++
 +
 +def respond_with_image(image):
 +    bio = io.BytesIO()
@@ -612,26 +590,34 @@ index 0000000..c21fa6a
 +    response.headers['Content-Type'] = 'image/png'
 +    return response
 +
-+def make_tile_server(port, fn):
++def make_tile_server(port_coordination, fn):
 +    '''
 +    Makes a tile server and starts it on the given port, using a function
 +    that takes z, x, y as the tile route.
 +    '''
 +    app = Flask(__name__)
-+    http_server = WSGIServer(('', port), app)
++    http_server = None
 +
-+    def shutdown():
++    f = open(os.devnull, "w")
++    # sys.stdout = f
++    sys.stderr = f
++
++    def shutdown1():
 +        time.sleep(0.5)
 +        http_server.stop()
 +
 +    @app.route('/shutdown')
-+    def shutdown():
++    def shutdown2():
 +        try:
-+            t = threading.Thread(target=shutdown)
++            t = threading.Thread(target=shutdown1)
 +            t.start()
 +            # Do not return a response, as this causes odd issues.
 +        except Exception as e:
 +            return make_response("Tile route error: %s - %s" % (str(e), traceback.format_exc()), 500)
++
++    @app.route('/handshake')
++    def handshake():
++        return port_coordination['handshake']
 +
 +    @app.route("/tile/<int:z>/<int:x>/<int:y>.png")
 +    def tile(z, x, y):
@@ -640,7 +626,14 @@ index 0000000..c21fa6a
 +        except Exception as e:
 +            return make_response("Tile route error: %s - %s" % (str(e), traceback.format_exc()), 500)
 +
-+    return http_server.serve_forever()
++    port_coordination['port'] = -1
++    while port_coordination['port'] < 0:
++        try:
++            port_coordination['port'] = randint(49152, 65535)
++            http_server = WSGIServer(('', port_coordination['port']), app)
++            return http_server.serve_forever()
++        except:
++            port_coordination['port'] = -1
 +
 +def rdd_server(port, pyramid, render_tile):
 +    def tile(z, x, y):
@@ -760,10 +753,10 @@ index f95e8af..06e5cf3 100644
 +           'RddRasterData',
 +           'GeoTrellisCatalogLayerData')
 diff --git a/geonotebook/wrappers/raster.py b/geonotebook/wrappers/raster.py
-index b2a83d3..3eda93b 100644
+index b2a83d3..8460a1c 100644
 --- a/geonotebook/wrappers/raster.py
 +++ b/geonotebook/wrappers/raster.py
-@@ -8,6 +8,46 @@ import pkg_resources as pr
+@@ -8,6 +8,55 @@ import pkg_resources as pr
  
  from shapely.geometry import Polygon
  
@@ -776,6 +769,15 @@ index b2a83d3..3eda93b 100644
 +        if not (isinstance(rdd, RasterRDD) or isinstance(rdd, TiledRasterRDD) or isinstance(rdd, PngRDD)):
 +            raise TypeError("Expected a RasterRDD, TiledRasterRDD, or PngRDD")
 +
++        self.rdd = rdd
++
++        if not name:
++            self.name = str(hash(rdd))
++        else:
++            self.name = name
++
++class TMSRasterData(object):
++    def __init__(self, rdd, name=None):
 +        self.rdd = rdd
 +
 +        if not name:
@@ -860,119 +862,6 @@ index 6ffdad5..a43f0b8 100644
 +    def geojson(self):
 +        """Return an object (geojson) representation."""
 +        return self._geojson
-diff --git a/moop.txt b/moop.txt
-new file mode 100644
-index 0000000..f625674
---- /dev/null
-+++ b/moop.txt
-@@ -0,0 +1,107 @@
-+diff --git a/geonotebook/vis/geotrellis/geotrellis.py b/geonotebook/vis/geotrellis/geotrellis.py
-+index d47af93..a6a5ab2 100644
-+--- a/geonotebook/vis/geotrellis/geotrellis.py
-++++ b/geonotebook/vis/geotrellis/geotrellis.py
-+@@ -10,11 +10,28 @@ from tornado.web import URLSpec
-+ 
-+ # jupyterhub --no-ssl --Spawner.notebook_dir=/home/hadoop
-+ 
-++class GeoTrellisHandler(IPythonHandler):
-++
-++    def initialize(self, moop):
-++        self.moop = moop
-++
-++    def get(self, layer_name, _x, _y, _zoom, **kwargs):
-++        x = int(_x)
-++        y = int(_y)
-++        zoom = int(_zoom)
-++
-++        # self.set_header('Content-Type', 'image/png')
-++        # png = self.fn(layer_name, x, y, zoom)
-++        # self.write(png)
-++        self.write(str(self.moop))
-++        self.finish()
-++
-+ class GeoTrellis(object):
-+ 
-+     def __init__(self, config, catalog, url):
-+         self.base_url = url
-+         self.catalog = catalog
-++        self.moop = {}
-+ 
-+     def start_kernel(self, kernel):
-+         pass
-+@@ -23,43 +40,44 @@ class GeoTrellis(object):
-+         pass
-+ 
-+     def initialize_webapp(self, config, webapp):
-+-        pass
-++        pattern = r'/user/[^/]+/geotrellis/([^/]+)/([0-9]+)/([0-9]+)/([0-9]+)\.png.*'
-++        webapp.add_handlers(r'.*', [(pattern, GeoTrellisHandler, {'moop': webapp})])
-+ 
-+     def get_params(self, name, data, **kwargs):
-+         return {}
-+ 
-+     def ingest(self, data, geopysc, max_zoom, name=None, **kwargs):
-+-        from geopyspark.geotrellis.catalog import write
-+-        from geopyspark.geotrellis.constants import SPATIAL
-+-        from geopyspark.geotrellis.geotiff_rdd import geotiff_rdd
-+-        from geopyspark.geotrellis.tile_layer import collect_pyramid_metadata, tile_to_layout, pyramid, reproject
-++        # from geopyspark.geotrellis.catalog import write
-++        # from geopyspark.geotrellis.constants import SPATIAL
-++        # from geopyspark.geotrellis.geotiff_rdd import geotiff_rdd
-++        # from geopyspark.geotrellis.tile_layer import collect_pyramid_metadata, tile_to_layout, pyramid, reproject
-+ 
-+         path = data.uri
-+         layer_name = format(hash(name) + hash(str(kwargs)), 'x').replace("-", "Z")
-+ 
-+-        # GeoTrellis ingest
-+-        rdd = geotiff_rdd(geopysc, SPATIAL, path, maxTileSize=256, numPartitions=64)
-+-        reprojected = rdd #reproject(geopysc, rdd, "EPSG:3857")
-+-        (_, metadata) = collect_pyramid_metadata(geopysc,
-+-                                                 SPATIAL,
-+-                                                 reprojected,
-+-                                                 crs="EPSG:3857",
-+-                                                 tile_size=256)
-+-        laid_out = tile_to_layout(geopysc, SPATIAL, reprojected, metadata)
-+-        pyramided = pyramid(geopysc,
-+-                            SPATIAL,
-+-                            laid_out,
-+-                            metadata,
-+-                            256,
-+-                            max_zoom,
-+-                            0)
-+-        for zoom, layer_rdd, layer_metadata in pyramided:
-+-            write(geopysc,
-+-                  SPATIAL,
-+-                  self.catalog,
-+-                  layer_name,
-+-                  zoom,
-+-                  layer_rdd,
-+-                  layer_metadata)
-++        # # GeoTrellis ingest
-++        # rdd = geotiff_rdd(geopysc, SPATIAL, path, maxTileSize=256, numPartitions=64)
-++        # reprojected = rdd #reproject(geopysc, rdd, "EPSG:3857")
-++        # (_, metadata) = collect_pyramid_metadata(geopysc,
-++        #                                          SPATIAL,
-++        #                                          reprojected,
-++        #                                          crs="EPSG:3857",
-++        #                                          tile_size=256)
-++        # laid_out = tile_to_layout(geopysc, SPATIAL, reprojected, metadata)
-++        # pyramided = pyramid(geopysc,
-++        #                     SPATIAL,
-++        #                     laid_out,
-++        #                     metadata,
-++        #                     256,
-++        #                     max_zoom,
-++        #                     0)
-++        # for zoom, layer_rdd, layer_metadata in pyramided:
-++        #     write(geopysc,
-++        #           SPATIAL,
-++        #           self.catalog,
-++        #           layer_name,
-++        #           zoom,
-++        #           layer_rdd,
-++        #           layer_metadata)
-+ 
-+         return self.base_url + "/" + layer_name
 diff --git a/notebooks/02_Raster_Data.ipynb b/notebooks/02_Raster_Data.ipynb
 index bc17295..ddf0d3e 100644
 --- a/notebooks/02_Raster_Data.ipynb
@@ -1520,6 +1409,16 @@ index bc17295..ddf0d3e 100644
    }
   },
   "nbformat": 4,
+diff --git a/requirements.txt b/requirements.txt
+index 97b333b..3befbdb 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -13,3 +13,5 @@ matplotlib
+ pyproj
+ pandas
+ lxml
++gevent
++flask
 diff --git a/setup.py b/setup.py
 index 58d60fa..51f2329 100644
 --- a/setup.py

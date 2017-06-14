@@ -56,6 +56,8 @@ class GeoPyContext(object):
         self.sc = self.pysc._jsc.sc()
         self._jvm = self.pysc._gateway.jvm
 
+        self.pysc._gateway.start_callback_server()
+
         self.avroregistry = AvroRegistry()
 
     @staticmethod
