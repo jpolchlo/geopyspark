@@ -6,6 +6,7 @@ import org.apache.spark.storage.StorageLevel
 import geotrellis.raster._
 import geotrellis.raster.histogram._
 import geotrellis.raster.render._
+import geotrellis.raster.render.{ ColorMap => GTColorMap }
 import geotrellis.spark._
 import geotrellis.spark.render._
 
@@ -40,11 +41,11 @@ object Coloring {
     }
   }
 
-  def makeColorMap(breaks: Array[Int], name: String): ColorMap = ColorMap(breaks, getNamedRamp(name))
-  def makeColorMap(breaks: Array[Double], name: String): ColorMap = ColorMap(breaks, getNamedRamp(name))
+  def makeColorMap(breaks: Array[Int], name: String): GTColorMap = GTColorMap(breaks, getNamedRamp(name))
+  def makeColorMap(breaks: Array[Double], name: String): GTColorMap = GTColorMap(breaks, getNamedRamp(name))
 
-  def makeColorMap(hist: Histogram[Int], name: String): ColorMap = ColorMap.fromQuantileBreaks(hist, getNamedRamp(name))
-  def makeColorMap(hist: Histogram[Double], name: String)(implicit dummy: DummyImplicit): ColorMap = ColorMap.fromQuantileBreaks(hist, getNamedRamp(name))
+  def makeColorMap(hist: Histogram[Int], name: String): GTColorMap = GTColorMap.fromQuantileBreaks(hist, getNamedRamp(name))
+  def makeColorMap(hist: Histogram[Double], name: String)(implicit dummy: DummyImplicit): GTColorMap = GTColorMap.fromQuantileBreaks(hist, getNamedRamp(name))
 
 }
 
