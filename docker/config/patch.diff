@@ -64,7 +64,7 @@ index d2c2b9e..e659a43 100644
 +    print(ep.load())
      Config.register_vis_server(ep.name, ep.load())
 diff --git a/geonotebook/kernel.py b/geonotebook/kernel.py
-index 1e742d5..f6786b6 100644
+index 1e742d5..b6609b2 100644
 --- a/geonotebook/kernel.py
 +++ b/geonotebook/kernel.py
 @@ -1,5 +1,6 @@
@@ -74,7 +74,7 @@ index 1e742d5..f6786b6 100644
  
  from ipykernel.ipkernel import IPythonKernel
  from promise import Promise
-@@ -15,11 +16,17 @@ from .layers import (AnnotationLayer,
+@@ -15,11 +16,18 @@ from .layers import (AnnotationLayer,
                       GeonotebookLayerCollection,
                       NoDataLayer,
                       SimpleLayer,
@@ -87,13 +87,14 @@ index 1e742d5..f6786b6 100644
 +from .wrappers import (RddRasterData,
 +                       GeoTrellisCatalogLayerData,
 +                       RasterData,
++                       TMSRasterData,
 +                       RasterDataCollection,
 +                       VectorData,
 +                       GeoJsonData)
  
  
  class Remote(object):
-@@ -308,9 +315,12 @@ class Geonotebook(object):
+@@ -308,9 +316,12 @@ class Geonotebook(object):
          self.y = None
          self.z = None
          self.layers = GeonotebookLayerCollection([])
@@ -106,7 +107,7 @@ index 1e742d5..f6786b6 100644
      @property
      def kernel_id(self):
          return get_kernel_id(self._kernel)
-@@ -392,7 +402,27 @@ class Geonotebook(object):
+@@ -392,7 +403,37 @@ class Geonotebook(object):
              kwargs['zIndex'] = len(self.layers)
  
          # HACK:  figure out a way to do this without so many conditionals
@@ -131,11 +132,21 @@ index 1e742d5..f6786b6 100644
 +                                       vis_url=vis_url,
 +                                       **kwargs)
 +
++        elif isinstance(data, TMSRasterData):
++            name = data.name
++
++            layer = InProcessTileLayer(name,
++                                       self._remote,
++                                       data=data,
++                                       inproc_server_states=self._inproc_server_states,
++                                       vis_url=vis_url,
++                                       **kwargs)
++
 +        elif isinstance(data, RasterData):
              # TODO verify layer exists in geoserver?
              name = data.name if name is None else name
  
-@@ -406,7 +436,7 @@ class Geonotebook(object):
+@@ -406,7 +447,7 @@ class Geonotebook(object):
              layer = TimeSeriesLayer(
                  name, self._remote, data=data, vis_url=vis_url, **kwargs
              )
@@ -144,7 +155,7 @@ index 1e742d5..f6786b6 100644
              layer = VectorLayer(
                  name, self._remote, self.layers, data=data, **kwargs
              )
-@@ -438,7 +468,10 @@ class Geonotebook(object):
+@@ -438,7 +479,10 @@ class Geonotebook(object):
          if hasattr(layer_name, 'name'):
              layer_name = layer_name.name
  
@@ -248,10 +259,10 @@ index 0000000..3e3a150
 +__all__ = ('GeoTrellis')
 diff --git a/geonotebook/vis/geotrellis/geotrellis.py b/geonotebook/vis/geotrellis/geotrellis.py
 new file mode 100644
-index 0000000..bb6dd7f
+index 0000000..1dddcd4
 --- /dev/null
 +++ b/geonotebook/vis/geotrellis/geotrellis.py
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,171 @@
 +import os
 +import requests
 +import threading
@@ -271,6 +282,7 @@ index 0000000..bb6dd7f
 +from .render_methods import render_default_rdd
 +
 +logger = logging.getLogger('geotrellis-tile-server')
++logger.setLevel(10)
 +# jupyterhub --no-ssl --Spawner.notebook_dir=/home/hadoop/notebooks
 +
 +
@@ -353,11 +365,12 @@ index 0000000..bb6dd7f
 +
 +        # TODO: refactor this to different methods?
 +        if isinstance(data, TMSRasterData):
-+            rdd = TMSRasterData.rdd
-+            geopysc = rdd.geopysc
-+            server = make_tms(geopysc, port_coordination['handshake'])
-+
++            tms = data.tms
++            geopysc = tms.geopysc
++            server = tms.server
++            server.set_handshake(port_coordination['handshake'])
 +            port_coordination['port'] = server.port()
++            print('Added TMS server at port {}'.format(server.port()))
 +        elif isinstance(data, RddRasterData):
 +            rdd = data.rdd
 +            if isinstance(rdd, PngRDD):
@@ -735,13 +748,13 @@ index 0000000..488b040
 +
 +    return make_tile_server(port, tile)
 diff --git a/geonotebook/wrappers/__init__.py b/geonotebook/wrappers/__init__.py
-index f95e8af..06e5cf3 100644
+index f95e8af..02b45af 100644
 --- a/geonotebook/wrappers/__init__.py
 +++ b/geonotebook/wrappers/__init__.py
-@@ -1,5 +1,10 @@
+@@ -1,5 +1,11 @@
 -from .raster import RasterData, RasterDataCollection
 -from .vector import VectorData
-+from .raster import RddRasterData, RasterData, RasterDataCollection, GeoTrellisCatalogLayerData
++from .raster import RddRasterData, RasterData, TMSRasterData, RasterDataCollection, GeoTrellisCatalogLayerData
 +from .vector import VectorData, GeoJsonData
  
  
@@ -751,9 +764,10 @@ index f95e8af..06e5cf3 100644
 +           'VectorData',
 +           'GeoJsonData',
 +           'RddRasterData',
++           'TMSRasterData',
 +           'GeoTrellisCatalogLayerData')
 diff --git a/geonotebook/wrappers/raster.py b/geonotebook/wrappers/raster.py
-index b2a83d3..8460a1c 100644
+index b2a83d3..9e72d7f 100644
 --- a/geonotebook/wrappers/raster.py
 +++ b/geonotebook/wrappers/raster.py
 @@ -8,6 +8,55 @@ import pkg_resources as pr
@@ -777,11 +791,11 @@ index b2a83d3..8460a1c 100644
 +            self.name = name
 +
 +class TMSRasterData(object):
-+    def __init__(self, rdd, name=None):
-+        self.rdd = rdd
++    def __init__(self, tms, name=None):
++        self.tms = tms
 +
 +        if not name:
-+            self.name = str(hash(rdd))
++            self.name = str(hash(tms))
 +        else:
 +            self.name = name
 +
