@@ -259,10 +259,10 @@ index 0000000..3e3a150
 +__all__ = ('GeoTrellis')
 diff --git a/geonotebook/vis/geotrellis/geotrellis.py b/geonotebook/vis/geotrellis/geotrellis.py
 new file mode 100644
-index 0000000..1dddcd4
+index 0000000..2e2413b
 --- /dev/null
 +++ b/geonotebook/vis/geotrellis/geotrellis.py
-@@ -0,0 +1,171 @@
+@@ -0,0 +1,172 @@
 +import os
 +import requests
 +import threading
@@ -368,7 +368,8 @@ index 0000000..1dddcd4
 +            tms = data.tms
 +            geopysc = tms.geopysc
 +            server = tms.server
-+            server.set_handshake(port_coordination['handshake'])
++            server.setHandshake(port_coordination['handshake'])
++            server.bind("0.0.0.0")
 +            port_coordination['port'] = server.port()
 +            print('Added TMS server at port {}'.format(server.port()))
 +        elif isinstance(data, RddRasterData):
