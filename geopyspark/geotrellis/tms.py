@@ -1,3 +1,4 @@
+import copy
 import io
 import numpy as np
 
@@ -64,7 +65,9 @@ class TMSServer(object):
         self.pysc = pysc
         self.server = server
         self.handshake = ''
-        pysc._gateway.start_callback_server()
+        csp = copy.copy(pysc._gateway.callback_server_parameters)
+        csp.port = 0
+        pysc._gateway.start_callback_server(callback_server_parameters=csp)
 
     def set_handshake(self, handshake):
         self.server.set_handshake(handshake)
