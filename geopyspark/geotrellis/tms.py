@@ -168,6 +168,7 @@ class TMS(object):
         self.server.unbind()
         self._port = None
         self._host = None
+        self.bound = False
 
     @property
     def host(self):

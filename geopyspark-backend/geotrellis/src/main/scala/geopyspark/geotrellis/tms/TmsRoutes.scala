@@ -60,15 +60,19 @@ object TMSServerRoutes {
   private class RenderingTileRoute(reader: TileReader, renderer: TileRender) extends TMSServerRoute {
     def root: Route = 
       pathPrefix("tile" / IntNumber / IntNumber / IntNumber) { (zoom, x, y) =>
-        val tileFuture = reader.retrieve(zoom, x, y)
-        complete {
-          tileFuture.map(_.map{tile =>
-            if (renderer.requiresEncoding()) {
-              renderer.renderEncoded(geopyspark.geotrellis.PythonTranslator.toPython(MultibandTile(tile)))
-            } else {
-              renderer.render(MultibandTile(tile))
-            }
-          })
+        val tileFuture = 
+          reader
+            .retrieve(zoom, x, y)
+            .map(_.map{tile =>
+              if (renderer.requiresEncoding()) {
+                renderer.renderEncoded(geopyspark.geotrellis.PythonTranslator.toPython(MultibandTile(tile)))
+              } else {
+                renderer.render(MultibandTile(tile))
+              }
+            })
+        onSuccess(tileFuture) {
+          case Some(t) => complete(t)
+          case None => complete(204, None)
         }
       }
 
@@ -81,16 +85,18 @@ object TMSServerRoutes {
       pathPrefix("tile" / IntNumber / IntNumber / IntNumber) { (zoom, x, y) =>
         val tileFutures: List[Future[Option[Tile]]] = readers.map(_.retrieve(zoom, x, y))
         val futureTiles: Future[Option[Array[Tile]]] = tileFutures.sequence.map(_.sequence).map(_.map(_.toArray))
-        complete {
-          futureTiles.map(
-            _.map(array =>
-              if (compositer.requiresEncoding()) {
-                compositer.compositeEncoded(array.map{tile => geopyspark.geotrellis.PythonTranslator.toPython(MultibandTile(tile))})
-              } else {
-                compositer.composite(array.map(MultibandTile(_))) 
-              }
+        rejectEmptyResponse {
+          complete {
+            futureTiles.map(
+              _.map(array =>
+                if (compositer.requiresEncoding()) {
+                  compositer.compositeEncoded(array.map{tile => geopyspark.geotrellis.PythonTranslator.toPython(MultibandTile(tile))})
+                } else {
+                  compositer.composite(array.map(MultibandTile(_))) 
+                }
+              )
             )
-          )
+          }
         }
       }
 
