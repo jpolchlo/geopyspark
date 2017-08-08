@@ -1,10 +1,15 @@
 package geopyspark.geotrellis.tms
 
 import geopyspark.geotrellis.TiledRasterLayer
+import geotrellis.proj4.WebMercator
 import geotrellis.raster._
 import geotrellis.spark._
 import geotrellis.spark.io._
+import geotrellis.spark.tiling._
+import geotrellis.vector.{Extent, Point}
 
+import cats.Applicative
+import cats.implicits._
 import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import org.apache.spark.rdd.RDD
 
@@ -20,6 +25,8 @@ trait TileReader {
   def shutdown(): Unit = {}
 
   def retrieve(zoom: Int, x: Int, y: Int): Future[Option[Tile]]
+
+  def extract(extent: Extent): Future[Option[Tile]]
 }
 
 object TileReaders {
@@ -30,6 +37,10 @@ object TileReaders {
   ) extends TileReader {
 
     private val layers = TrieMap.empty[Int, Reader[SpatialKey, Tile]]
+    private val zoomLevels = 
+      for { LayerId(name, zoom) <- valueReader.attributeStore.layerIds if name == catalog } yield zoom
+    private val maxZoom = zoomLevels.max
+    private val maxLayoutTransform = ZoomedLayoutScheme(WebMercator).levelForZoom(maxZoom).layout.mapTransform
 
     def retrieve(zoom: Int, x: Int, y: Int) = {
       val key = SpatialKey(x, y)
@@ -37,6 +48,29 @@ object TileReaders {
         val reader = layers.getOrElseUpdate(zoom, valueReader.reader[SpatialKey, Tile](LayerId(catalog, zoom)))
         Try(reader(key)).toOption
       }
+    }
+
+    def extract(extent: Extent) = {
+      val extractBounds = maxLayoutTransform(extent)
+      val supersetExtent = maxLayoutTransform(extractBounds)
+      val reader = layers.getOrElseUpdate(maxZoom, valueReader.reader[SpatialKey, Tile](LayerId(catalog, maxZoom)))
+      val tiles: List[Future[Option[(SpatialKey, Tile)]]] = 
+        extractBounds
+          .coordsIter
+          .map{ case (x, y) => {
+            val key = SpatialKey(x, y)
+            Future {
+              Try((key, reader(key))).toOption
+            }
+          }}
+          .toList
+      val inputTiles: Future[Option[Seq[(SpatialKey, Tile)]]] = 
+          tiles
+            .sequence        // => Future[Iterator[Option[(SpatialKey, Tile)]]]
+            .map(_.sequence) // => Future[Option[Iterator[(SpatialKey, Tile)]]]
+            .map(_.map(_.toSeq))
+      val stitched: Future[Option[Raster[Tile]]] = inputTiles.map(_.map{ keyTiles => Raster(keyTiles.stitch, supersetExtent)})
+      stitched.map(_.map(_.crop(extent).tile))
     }
 
   }
@@ -152,6 +186,21 @@ object TileReaders {
       val callback = Promise[Option[Tile]]()
       aggregator ! QueueRequest(zoom, x, y, callback)
       callback.future
+    }
+
+    private val maxZoom = levels.keys.max
+    private val maxLayoutTransform = ZoomedLayoutScheme(WebMercator).levelForZoom(maxZoom).layout.mapTransform
+
+    def extract(extent: Extent) = {
+      val extractBounds = maxLayoutTransform(extent)
+      val supersetExtent = maxLayoutTransform(extractBounds)
+      val keys = extractBounds.coordsIter.map{ case (x, y) => SpatialKey(x,y)}.toSeq.toSet
+      val rdd = levels(maxZoom)
+      Future { 
+        val results = new MultiValueRDDFunctions(rdd).multilookup(keys)
+        val stitched = Raster(results.stitch, supersetExtent)
+        Some(stitched.crop(extent).tile) 
+      }
     }
   }
 
