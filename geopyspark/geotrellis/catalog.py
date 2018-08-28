@@ -44,7 +44,8 @@ def read_value(uri,
                layer_zoom,
                col,
                row,
-               zdt=None):
+               zdt=None,
+               use_cogs=False):
     """Reads a single ``Tile`` from a GeoTrellis catalog.
     Unlike other functions in this module, this will not return a ``TiledRasterLayer``, but rather a
     GeoPySpark formatted raster.
@@ -67,7 +68,7 @@ def read_value(uri,
         :class:`~geopyspark.geotrellis.Tile`
     """
 
-    reader = ValueReader(uri, layer_name, layer_zoom)
+    reader = ValueReader(uri, layer_name, layer_zoom, use_cogs)
     return reader.read(col, row, zdt)
 
 
@@ -76,13 +77,13 @@ class ValueReader(object):
     Suitable for use in TMS service because it does not have Spark overhead.
     """
 
-    def __init__(self, uri, layer_name, zoom=None):
+    def __init__(self, uri, layer_name, zoom=None, use_cogs=False):
 
         self.layer_name = layer_name
         self.zoom = zoom
         pysc = get_spark_context()
         ValueReaderWrapper = pysc._gateway.jvm.geopyspark.geotrellis.io.ValueReaderWrapper
-        self.wrapper = ValueReaderWrapper(uri)
+        self.wrapper = ValueReaderWrapper(uri, use_cogs)
 
     def read(self, col, row, zdt=None, zoom=None):
         """Reads a single ``Tile`` from a GeoTrellis catalog.
@@ -120,7 +121,8 @@ def query(uri,
           query_geom=None,
           time_intervals=None,
           query_proj=None,
-          num_partitions=None):
+          num_partitions=None,
+          use_cogs=False):
     """Queries a single, zoom layer from a GeoTrellis catalog given spatial and/or time parameters.
 
     Note:
@@ -196,7 +198,7 @@ def query(uri,
     else:
         time_intervals = []
 
-    reader = pysc._gateway.jvm.geopyspark.geotrellis.io.LayerReaderWrapper(pysc._jsc.sc())
+    reader = pysc._gateway.jvm.geopyspark.geotrellis.io.LayerReaderWrapper(pysc._jsc.sc(), use_cogs)
     srdd = reader.query(uri,
                         layer_name, layer_zoom,
                         query_geom, time_intervals, query_proj,
@@ -213,7 +215,8 @@ def write(uri,
           index_strategy=IndexingMethod.ZORDER,
           time_unit=None,
           time_resolution=None,
-          store=None):
+          store=None,
+          use_cogs=False):
     """Writes a tile layer to a specified destination.
 
     Args:
@@ -256,7 +259,7 @@ def write(uri,
     time_unit = time_unit or ""
 
     writer = pysc._gateway.jvm.geopyspark.geotrellis.io.LayerWriterWrapper(
-        store.wrapper.attributeStore(), uri)
+        store.wrapper.attributeStore(), uri, use_cogs)
 
     if tiled_raster_layer.layer_type == LayerType.SPATIAL:
         writer.writeSpatial(layer_name,
